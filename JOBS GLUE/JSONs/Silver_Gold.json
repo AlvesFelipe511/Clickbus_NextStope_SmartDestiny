@@ -1,0 +1,59 @@
+{
+	"jobConfig": {
+		"name": "Silver/Gold",
+		"description": "",
+		"role": "arn:aws:iam::005102550942:role/service-role/AWSGlueServiceRole-fiap",
+		"command": "glueetl",
+		"version": "4.0",
+		"runtime": null,
+		"workerType": "G.1X",
+		"numberOfWorkers": 2,
+		"maxCapacity": 2,
+		"jobRunQueuingEnabled": false,
+		"maxRetries": 0,
+		"timeout": 2880,
+		"maxConcurrentRuns": 1,
+		"security": "none",
+		"scriptName": "Gold.py",
+		"scriptLocation": "s3://aws-glue-assets-005102550942-sa-east-1/scripts/Silver/",
+		"language": "python-3",
+		"spark": true,
+		"sparkConfiguration": "standard",
+		"jobParameters": [
+			{
+				"key": "--gold_prefix",
+				"value": "s3://cbchallenge/Gold/eventos/",
+				"existing": false
+			},
+			{
+				"key": "--processed_prefix",
+				"value": "s3://cbchallenge/Silver/Arquivos Processados/",
+				"existing": false
+			},
+			{
+				"key": "--silver_prefix",
+				"value": "s3://cbchallenge/Silver/Todos os eventos/",
+				"existing": false
+			}
+		],
+		"tags": [],
+		"jobMode": "DEVELOPER_MODE",
+		"createdOn": "2025-09-12T22:53:05.100Z",
+		"developerMode": true,
+		"connectionsList": [],
+		"temporaryDirectory": "s3://aws-glue-assets-005102550942-sa-east-1/temporary/",
+		"logging": true,
+		"glueHiveMetastore": true,
+		"etlAutoTuning": true,
+		"metrics": true,
+		"observabilityMetrics": true,
+		"bookmark": "job-bookmark-disable",
+		"sparkPath": "s3://aws-glue-assets-005102550942-sa-east-1/sparkHistoryLogs/",
+		"flexExecution": false,
+		"minFlexWorkers": null,
+		"maintenanceWindow": null
+	},
+	"hasBeenSaved": false,
+	"usageProfileName": null,
+	"script": "import sys\r\nfrom datetime import datetime\r\nfrom urllib.parse import urlparse\r\n\r\nimport boto3\r\nfrom awsglue.utils import getResolvedOptions\r\nfrom pyspark.sql import functions as F\r\nfrom pyspark.sql import types as T\r\nfrom pyspark.context import SparkContext\r\nfrom awsglue.context import GlueContext\r\nfrom awsglue.job import Job\r\n\r\n# =================== Configs ===================\r\nBRT_TZ = \"America/Sao_Paulo\"\r\n\r\ndef _ensure_slash(u: str) -> str:\r\n    return u if u.endswith(\"/\") else u + \"/\"\r\n\r\ndef parse_s3_uri(s3_uri: str):\r\n    if not s3_uri.startswith(\"s3://\"):\r\n        raise ValueError(f\"URI inválida: {s3_uri}\")\r\n    p = urlparse(s3_uri)\r\n    bucket = p.netloc\r\n    prefix = p.path.lstrip(\"/\")\r\n    # não adiciona / aqui; quem chamar decide\r\n    return bucket, prefix\r\n\r\ndef list_keys(s3, bucket, prefix):\r\n    kwargs = {\"Bucket\": bucket, \"Prefix\": prefix}\r\n    while True:\r\n        resp = s3.list_objects_v2(**kwargs)\r\n        for c in resp.get(\"Contents\", []):\r\n            yield c[\"Key\"]\r\n        if resp.get(\"IsTruncated\"):\r\n            kwargs[\"ContinuationToken\"] = resp.get(\"NextContinuationToken\")\r\n        else:\r\n            break\r\n\r\ndef ensure_folder_marker(s3, bucket, prefix, marker_name=\"_KEEP\"):\r\n    \"\"\"Garante que o prefixo apareça como 'pasta' no console do S3 criando um objeto vazio.\"\"\"\r\n    if not prefix.endswith(\"/\"):\r\n        prefix += \"/\"\r\n    key = f\"{prefix}{marker_name}\"\r\n    s3.put_object(Bucket=bucket, Key=key, Body=b\"\")\r\n\r\n# =================== Args ===================\r\nargs = getResolvedOptions(\r\n    sys.argv,\r\n    [\r\n        \"JOB_NAME\",\r\n        \"silver_prefix\",      \r\n        \"gold_prefix\",        \r\n        \"processed_prefix\"    \r\n    ],\r\n)\r\n\r\nsilver_uri = _ensure_slash(args[\"silver_prefix\"])\r\ngold_uri = _ensure_slash(args[\"gold_prefix\"])\r\nprocessed_uri = _ensure_slash(args[\"processed_prefix\"])\r\n\r\nrun_stamp = datetime.now().strftime(\"%Y%m%d_%H%M%S\")\r\nrun_date_folder = datetime.now().strftime(\"%Y-%m-%d\")\r\n\r\n# =================== Glue/Spark ===================\r\nsc = SparkContext()\r\nglueContext = GlueContext(sc)\r\nspark = glueContext.spark_session\r\njob = Job(glueContext)\r\njob.init(args[\"JOB_NAME\"], args)\r\n\r\n# =================== Leitura Silver (UTF-8) ===================\r\n# Lê todos os CSVs que estiverem no prefixo do Silver (ex.: .../Todos os eventos/)\r\ndf = (\r\n    spark.read\r\n    .option(\"header\", True)\r\n    .option(\"quote\", '\"')\r\n    .option(\"escape\", '\"')\r\n    .option(\"encoding\", \"UTF-8\")\r\n    .option(\"ignoreLeadingWhiteSpace\", True)\r\n    .option(\"ignoreTrailingWhiteSpace\", True)\r\n    .csv(silver_uri)\r\n)\r\n\r\n# Garante colunas esperadas (caso venham faltando)\r\nexpected = [\"title\", \"venue\", \"city\", \"event_date_text\", \"event_date\", \"source\", \"ingest_date\"]\r\nfor col in expected:\r\n    if col not in df.columns:\r\n        df = df.withColumn(col, F.lit(None).cast(T.StringType()))\r\n\r\n# Normalizações básicas\r\ndf = (\r\n    df.withColumn(\"title\", F.trim(F.col(\"title\")))\r\n      .withColumn(\"venue\", F.trim(F.col(\"venue\")))\r\n      .withColumn(\"city\",  F.trim(F.col(\"city\")))\r\n      .withColumn(\"source\", F.trim(F.col(\"source\")))\r\n      .withColumn(\"ingest_date\", F.trim(F.col(\"ingest_date\")))\r\n      .withColumn(\"event_date\",  F.trim(F.col(\"event_date\")))\r\n)\r\n\r\n# =================== DESCARTAR linhas sem cidade ===================\r\ndf = df.withColumn(\"city_norm\", F.lower(F.col(\"city\")))\r\ndf = df.filter(\r\n    (F.col(\"city\").isNotNull()) &\r\n    (F.length(F.trim(F.col(\"city\"))) > 0) &\r\n    (~F.col(\"city_norm\").isin(\"null\", \"none\", \"n/a\", \"na\"))\r\n).drop(\"city_norm\")\r\n\r\n# =================== Cortar 'venue' depois do último \"-\" ===================\r\nvenue_local = F.trim(\r\n    F.regexp_replace(\r\n        F.col(\"venue\"),\r\n        r\"\\s*[-–—][^-–—]*$\",\r\n        \"\"\r\n    )\r\n)\r\ndf = df.withColumn(\"venue_local\", venue_local)\r\n\r\n# =================== Datas/Horas (BRT) ===================\r\nts_event = F.to_timestamp(\"event_date\")\r\nts_event_brt = F.from_utc_timestamp(ts_event, BRT_TZ)\r\ncol_data_evento = F.date_format(ts_event_brt, \"dd/MM/yyyy\")\r\ncol_hora_evento = F.date_format(ts_event_brt, \"HH:mm\")\r\n\r\nts_ingest = F.to_timestamp(\"ingest_date\")\r\nts_ingest_brt = F.from_utc_timestamp(ts_ingest, BRT_TZ)\r\ncol_data_ingest = F.date_format(ts_ingest_brt, \"dd/MM/yyyy HH:mm\")\r\n\r\n# =================== Seleção/renomeação final ===================\r\ndf_out = (\r\n    df.select(\r\n        F.col(\"title\").alias(\"Nome do evento\"),\r\n        F.col(\"venue_local\").alias(\"local\"),\r\n        F.col(\"city\").alias(\"cidade\"),\r\n        col_data_evento.alias(\"evento (formato dd/mm/yyyy)\"),\r\n        col_hora_evento.alias(\"hora do evento (horário do brasil)\"),\r\n        F.col(\"source\").alias(\"origem\"),\r\n        col_data_ingest.alias(\"data de ingestão\"),\r\n    )\r\n)\r\n\r\n# =================== Escrita na GOLD (1 CSV) ===================\r\ngold_bucket, gold_prefix = parse_s3_uri(gold_uri)\r\ngold_prefix = _ensure_slash(gold_prefix)  # só o prefixo, não a URI completa\r\ntmp_prefix = f\"{gold_prefix}_tmp_run_{run_stamp}/\"\r\n\r\n# Força aspas em todas as colunas e escapa aspas internas — robusto contra vírgulas/CRLF\r\n(\r\n    df_out.coalesce(1)\r\n    .write.mode(\"overwrite\")\r\n    .option(\"header\", True)\r\n    .option(\"quote\", '\"')\r\n    .option(\"escape\", '\"')\r\n    .option(\"quoteAll\", True)\r\n    .csv(f\"s3://{gold_bucket}/{tmp_prefix}\")\r\n)\r\n\r\ns3 = boto3.client(\"s3\")\r\n\r\n# Localiza o part-*.csv\r\npart_csv_key = None\r\nfor key in list_keys(s3, gold_bucket, tmp_prefix):\r\n    name = key.split(\"/\")[-1]\r\n    if name.endswith(\".csv\") and name.startswith(\"part-\"):\r\n        part_csv_key = key\r\n        break\r\n\r\nif not part_csv_key:\r\n    # fallback, se o writer nomear diferente\r\n    for key in list_keys(s3, gold_bucket, tmp_prefix):\r\n        if key.endswith(\".csv\"):\r\n            part_csv_key = key\r\n            break\r\n\r\nif not part_csv_key:\r\n    raise RuntimeError(\"Não encontrei o CSV de saída no diretório temporário.\")\r\n\r\nfinal_key = f\"{gold_prefix}eventos_padronizados_{run_stamp}.csv\"\r\n\r\n# Copia para o nome final e remove tmp\r\ns3.copy_object(\r\n    Bucket=gold_bucket,\r\n    CopySource={\"Bucket\": gold_bucket, \"Key\": part_csv_key},\r\n    Key=final_key\r\n)\r\n# limpa qualquer coisa que sobrou no tmp\r\nto_delete = [{\"Key\": k} for k in list_keys(s3, gold_bucket, tmp_prefix)]\r\nif to_delete:\r\n    # (lotes pequenos; se um dia passar de 1000, vale paginar por 1000)\r\n    s3.delete_objects(Bucket=gold_bucket, Delete={\"Objects\": to_delete})\r\n\r\n# =================== Move processados da SILVER ===================\r\nsilver_bucket, silver_prefix = parse_s3_uri(silver_uri)\r\nsilver_prefix = _ensure_slash(silver_prefix)\r\n\r\nprocessed_bucket, processed_prefix = parse_s3_uri(processed_uri)\r\nprocessed_prefix = _ensure_slash(processed_prefix)\r\ndest_processed_prefix = f\"{processed_prefix}{run_date_folder}/\"\r\n\r\n# Move somente .csv que estão na raiz do prefixo do Silver (ignora _KEEP/_SUCCESS)\r\nto_move = [\r\n    k for k in list_keys(s3, silver_bucket, silver_prefix)\r\n    if k.lower().endswith(\".csv\")\r\n       and not k.split(\"/\")[-1].startswith(\"_\")\r\n]\r\n\r\nfor src_key in to_move:\r\n    base_name = src_key.split(\"/\")[-1]\r\n    dst_key = f\"{dest_processed_prefix}{base_name}\"\r\n    s3.copy_object(\r\n        Bucket=processed_bucket,\r\n        CopySource={\"Bucket\": silver_bucket, \"Key\": src_key},\r\n        Key=dst_key\r\n    )\r\n    s3.delete_object(Bucket=silver_bucket, Key=src_key)\r\n\r\n# >>>>>>> GARANTE QUE A PASTA CONTINUA EXISTINDO NO CONSOLE <<<<<<<\r\nensure_folder_marker(s3, silver_bucket, silver_prefix, marker_name=\"_KEEP\")\r\n\r\nprint(f\"OK! Gerado: s3://{gold_bucket}/{final_key}\")\r\nprint(f\"Arquivos do Silver movidos para: s3://{processed_bucket}/{dest_processed_prefix}\")\r\n\r\njob.commit()\r\n"
+}
