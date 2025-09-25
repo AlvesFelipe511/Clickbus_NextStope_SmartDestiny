@@ -1,0 +1,4 @@
+playwright==1.46.*
+beautifulsoup4==4.12.*
+psycopg2-binary==2.9.*
+boto3==1.34.*
