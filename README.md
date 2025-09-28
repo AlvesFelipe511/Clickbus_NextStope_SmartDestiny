@@ -13,3 +13,6 @@ Repositório com **códigos, dados e artefatos** do desafio FIAP (ClickBus). Aqu
 - **Orquestração:** **Step Functions**
 - **Ingestão:** **Lambda** para MongoDB Atlas / RDS
 - **Coleta (Scraping):** **ECS** com contêineres Docker
+
+<img width="8804" height="3604" alt="image" src="https://github.com/user-attachments/assets/dfd63885-838e-4f8b-affd-c917c6a27ff6" />
+
