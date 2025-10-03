@@ -2,6 +2,8 @@
 
 Repositório com **códigos, dados e artefatos** do desafio FIAP (ClickBus). Aqui estão o **pipeline de coleta e tratamento na AWS** e os **notebooks/modelos de Machine Learning**.
 
+Link do vídeo de apresentação pitch: https://www.youtube.com/watch?v=lQXnZpiyynI
+
 ## 🎯 Objetivos (Data & ML)
 - **Decodificando o Comportamento do Cliente:** segmentar clientes por histórico de compras para orientar Growth (promoções, e-mail, push).
 - **O Timing é Tudo:** prever se cada cliente comprará nos próximos **7 ou 30 dias** (classificação binária).
